@@ -1,0 +1,86 @@
+name: build
+
+on: 
+  push:
+    branches:
+    - "*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        target: [K2P-NANO]
+        toolchain: [mipsel-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.target }}-${{ matrix.toolchain }}
+          
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.20'
+          check-latest: true
+          cache: false
+          
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          check-latest: true
+          
+      - name: Prepare
+        run: |
+          sudo apt update
+          sudo apt install -y unzip libtool-bin curl cmake gperf gawk flex bison nano xxd \
+            fakeroot kmod cpio git python3-docutils gettext automake autopoint \
+            texinfo build-essential help2man pkg-config zlib1g-dev libgmp3-dev \
+            libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget libc-dev-bin ccache
+            
+      - name: Download Toolchain
+        run: |
+          curl -LO https://github.com/${{ github.repository }}/releases/download/toolchain/${{ matrix.toolchain }}.tar.xz
+          sudo mkdir -p /opt/rt-n56u/toolchain-mipsel
+          sudo tar -xf ${{ matrix.toolchain }}.tar.xz -C /opt/rt-n56u/toolchain-mipsel
+          
+      - name: Build
+        run: |
+          make ${{ matrix.target }} TOOLCHAIN=${{ matrix.toolchain }}
+          if [ "${{ matrix.target }}" = "K2P-NANO" ]; then
+            image=$(ls trunk/images/*.trx)
+            mv $image $(echo $image | sed 's/K2P/K2P-NANO/')
+          fi
+          
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.toolchain }}
+          path: trunk/images/*.trx
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/download-artifact@v4
+        with:
+          name: mipsel-linux-musl
+          path: mipsel-linux-musl
+          
+      - name: Set Tag Name
+        run: echo "TAG_NAME=$(date +%Y%m%d)" >> $GITHUB_ENV
+        
+      - uses: rickstaa/action-create-tag@v1
+        with:
+          tag: ${{ env.TAG_NAME }}
+          force_push_tag: true
+          
+      - uses: ncipollo/release-action@v1
+        with:
+          commit: ${{ github.sha }}
+          tag: ${{ env.TAG_NAME }}
+          artifacts: "mipsel-linux-musl/*.trx"
+          allowUpdates: true
